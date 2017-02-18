@@ -1,5 +1,6 @@
 //Imported files
 #include <stdio.h>
+#include "stdlib.h"
 #include <stdbool.h>
 #include "stm32f10x.h"
 #include "stm32f10x_conf.h"
@@ -12,8 +13,16 @@
 #define SPI_MOSI 			GPIO_Pin_15
 #define SPI_CE 				GPIO_Pin_10
 
+/* I2C1 pin out*/
+#define I2C1_GPIO_Port 	GPIOB
+#define I2C1_SCL				GPIO_Pin_6
+#define I2C1_SDA				GPIO_Pin_7
 
-/* Motor control pins declaration */
+/* Constant definition */
+
+
+
+/* Motor control pins definition */
 #define motorL1_port	GPIOB
 #define motorL1_pin		GPIO_Pin_0
 
@@ -32,14 +41,28 @@
 #define motorREN_port	GPIOA
 #define motorREN_pin	GPIO_Pin_7
 
+/* Encoder pins definition*/
+#define encoderL1_port	GPIOA
+#define encoderL1_pin		GPIO_Pin_4
+
+#define encoderL2_port	GPIOA
+#define encoderL2_pin		GPIO_Pin_5
+
+#define encoderR1_port	GPIOB
+#define encoderR1_pin		GPIO_Pin_0
+
+#define encoderR2_port	GPIOB
+#define encoderR2_pin		GPIO_Pin_1
 
 /* Initialization functions declaration */
-static void GPIO_initialize(void);
+void GPIO_initialize(void);
 void TIM_initialize(void);
 void NVIC_Configuration(void);
-static void RCC_initialize(void);
+void RCC_initialize(void);
 void Motor_PWM_initialize(void);
-static void Motor_ControlPin_initialize(void);
+void Motor_ControlPin_initialize(void);
+void Encoder_Pin_initialize(void);
+void SPI_Pin_initialize(void);
 static void SetDutyCycle_LeftMotor(uint8_t);
 static void SetDutyCycle_RightMotor(uint8_t);
 
@@ -52,32 +75,23 @@ TIM_OCInitTypeDef outputChannelInit = {0,};
 
 //Variables
 uint16_t CCR_reset = 45;
-uint16_t PrescalerValue = 0;
+uint8_t RPM_flag = 1;
+uint8_t PID_flag = 1;
 
 
-/*APB1 -> 36MHz
-	APB2 -> 72MHz
-	AHB  -> 72MHz*/
+int16_t encoderL_counter = 0;
+uint8_t encoderL1_current_state = 0;
+uint8_t encoderL2_current_state = 0;
+uint8_t encoderL1_past_state = 0;
+uint8_t encoderL2_past_state = 0;
+int16_t motorL_RPM = 0;
 
-/* -----------------------------------------------------------------------
-    TIM3 Configuration: generate 4 PWM signals with 4 different duty cycles:
-    The TIM3CLK frequency is set to SystemCoreClock (Hz), to get TIM3 counter
-    clock at 24 MHz the Prescaler is computed as following:
-     - Prescaler = (TIM3CLK / TIM3 counter clock) - 1
-
-    SystemCoreClock is set to 72 MHz for Low-density, Medium-density, High-density
-    and Connectivity line devices and to 24 MHz for Low-Density Value line and
-    Medium-Density Value line devices
-		
-    The TIM3 is running at 36 KHz: TIM3 Frequency = TIM3 counter clock/(ARR + 1)
-                                                  = 24 MHz / 666 = 36 KHz
-																									
-    TIM3 Channel1 duty cycle = (TIM3_CCR1/ TIM3_ARR)* 100 = 50%
-    TIM3 Channel2 duty cycle = (TIM3_CCR2/ TIM3_ARR)* 100 = 37.5%
-    TIM3 Channel3 duty cycle = (TIM3_CCR3/ TIM3_ARR)* 100 = 25%
-    TIM3 Channel4 duty cycle = (TIM3_CCR4/ TIM3_ARR)* 100 = 12.5%
-  ----------------------------------------------------------------------- */
-
+int16_t encoderR_counter = 0;
+uint8_t encoderR1_current_state = 0;
+uint8_t encoderR2_current_state = 0;
+uint8_t encoderR1_past_state = 0;
+uint8_t encoderR2_past_state = 0;
+int16_t motorR_RPM = 0;
 
 int main(void) {
 	
@@ -87,6 +101,8 @@ int main(void) {
 	TIM_initialize();	
 	Motor_PWM_initialize();
 	Motor_ControlPin_initialize();
+	Encoder_Pin_initialize();
+	SPI_Pin_initialize();
 	
   // Start Timer 3 PWM output
 	TIM_Cmd(TIM3, ENABLE);
@@ -96,10 +112,69 @@ int main(void) {
 	TIM_ITConfig(TIM2, TIM_IT_Update, ENABLE);
 	TIM_Cmd(TIM2, ENABLE);
 
-	// LOOOOOOOOP
 	while(1) {
 		
-	
+		/* Update left and right motor encoder counter */
+		encoderL1_current_state = GPIO_ReadInputDataBit(encoderL1_port, encoderL1_pin);
+		encoderL2_current_state = GPIO_ReadInputDataBit(encoderL2_port, encoderL2_pin);
+		
+		encoderR1_current_state = GPIO_ReadInputDataBit(encoderR1_port, encoderR1_pin);
+		encoderR2_current_state = GPIO_ReadInputDataBit(encoderR2_port, encoderR2_pin);		
+		
+		// Determine turning direction on two phase encoder and add to counter
+		if ((encoderL1_past_state == 0) && (encoderL2_past_state == 0) && (encoderL1_current_state == 1)){
+			encoderL_counter++;
+		} else if ((encoderL1_past_state == 0) && (encoderL2_past_state == 0) && (encoderL2_current_state == 1)){
+			encoderL_counter--;		
+		}
+		
+		if ((encoderR1_past_state == 0) && (encoderR2_past_state == 0) && (encoderR2_current_state == 1)){
+			encoderR_counter++;		
+		}	else if ((encoderL1_past_state == 0) && (encoderL2_past_state == 0) && (encoderL2_current_state == 1)){
+			encoderR_counter--;
+		}
+		
+		// Save current state value in past state variable
+		encoderL1_past_state = encoderL1_current_state;
+		encoderL2_past_state = encoderL2_current_state;
+		
+		encoderR1_past_state = encoderR1_current_state;
+		encoderR2_past_state = encoderR2_current_state;
+		
+		
+		/* Get tranceiver data */
+		
+		
+		
+		
+			
+		
+		
+		/* Run RPM update at 20Hz interval (50ms)
+			 RPM_update_period >> loop period */
+		if (RPM_flag == 1){
+			
+			// 100 = (20Hz)*(60s/min)/(12inc/rev) 
+			motorL_RPM = encoderL_counter*100;
+			motorR_RPM = encoderR_counter*100;
+		
+			// Reset the encoder counters
+			encoderL_counter = 0;
+			encoderR_counter = 0;
+			RPM_flag = 0;
+		}
+		
+				
+		
+		/* Run PWM PID output update at 20Hz interval (50ms)
+			 PID_update_period >> loop period */
+		if (PID_flag == 1){
+		
+		
+		
+			PID_flag = 0;
+		}
+
   }		
 }
 
@@ -116,9 +191,9 @@ void GPIO_initialize(void){
 void TIM_initialize(void){
 		
 	// Initialize Timer 2
-	timerInitStructure.TIM_Prescaler = 14400;
+	timerInitStructure.TIM_Prescaler = 7200;
   timerInitStructure.TIM_CounterMode = TIM_CounterMode_Down;
-  timerInitStructure.TIM_Period = 10000;
+  timerInitStructure.TIM_Period = 500;
   timerInitStructure.TIM_ClockDivision = 0;
   timerInitStructure.TIM_RepetitionCounter = 0;
   TIM_TimeBaseInit(TIM2, &timerInitStructure);
@@ -138,7 +213,6 @@ void TIM_initialize(void){
   timerInitStructure.TIM_RepetitionCounter = 0;
   TIM_TimeBaseInit(TIM3, &timerInitStructure);
 	
-
 }
 
 /* RCC clock initialize */
@@ -146,6 +220,9 @@ void RCC_initialize(void){
 	
 	//GPIO A
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA , ENABLE);
+	
+	//GPIO B
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB , ENABLE);
 	
 	//TIMER 2
 	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
@@ -250,13 +327,70 @@ void SetDutyCycle_RightMotor(uint8_t percent){
 }
 
 
-/* Interrupt Handling */
+/* Initialize encoder pins */
+void Encoder_Pin_initialize(void){
+	
+	GPIO_InitStructure.GPIO_Pin = encoderL1_pin;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
+	GPIO_Init(encoderL1_port, &GPIO_InitStructure);
+
+	GPIO_InitStructure.GPIO_Pin = encoderL2_pin;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
+	GPIO_Init(encoderL2_port, &GPIO_InitStructure);
+
+	GPIO_InitStructure.GPIO_Pin = encoderR1_pin;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
+	GPIO_Init(encoderR1_port, &GPIO_InitStructure);
+	
+	GPIO_InitStructure.GPIO_Pin = encoderR2_pin;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
+	GPIO_Init(encoderR2_port, &GPIO_InitStructure);
+
+}
+
+/* Initialize SPI communication pins*/
+void SPI_Pin_initialize(void){
+
+	GPIO_InitStructure.GPIO_Pin = SPI_SCK;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
+	GPIO_Init(SPI_GPIO_Port, &GPIO_InitStructure);
+
+	GPIO_InitStructure.GPIO_Pin = SPI_MOSI;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
+	GPIO_Init(SPI_GPIO_Port, &GPIO_InitStructure);
+	
+	GPIO_InitStructure.GPIO_Pin = SPI_MISO;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
+	GPIO_Init(SPI_GPIO_Port, &GPIO_InitStructure);
+
+	GPIO_InitStructure.GPIO_Pin = SPI_CSN;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
+	GPIO_Init(SPI_GPIO_Port, &GPIO_InitStructure);
+	
+	GPIO_InitStructure.GPIO_Pin = SPI_CE;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
+	GPIO_Init(SPI_GPIO_Port, &GPIO_InitStructure);
+}
+
+
+/* Interrupt Handling @ 100Hz 10ms interval */
 void TIM2_IRQHandler(void)
 {
   if (TIM_GetITStatus(TIM2, TIM_IT_Update) != RESET)
   {
     TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
 		
+		RPM_flag = 1;
+		PID_flag = 1;		
     
   }
 		
