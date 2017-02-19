@@ -19,7 +19,10 @@
 #define I2C1_SDA				GPIO_Pin_7
 
 /* Constant definition */
-
+static float const PID_period = 0.05;
+static uint8_t const Kp = 1;
+static uint8_t const Ki = 1;
+static uint8_t const Kd = 1;
 
 
 /* Motor control pins definition */
@@ -63,8 +66,10 @@ void Motor_PWM_initialize(void);
 void Motor_ControlPin_initialize(void);
 void Encoder_Pin_initialize(void);
 void SPI_Pin_initialize(void);
+int16_t PID_update(int16_t, int16_t);
 static void SetDutyCycle_LeftMotor(uint8_t);
 static void SetDutyCycle_RightMotor(uint8_t);
+
 
 
 //Type Define
@@ -77,7 +82,13 @@ TIM_OCInitTypeDef outputChannelInit = {0,};
 uint16_t CCR_reset = 45;
 uint8_t RPM_flag = 1;
 uint8_t PID_flag = 1;
-
+int16_t error_past = 0;
+float proportional_val = 0;
+float integral_val = 0;
+float derivative_val = 0;
+int16_t total_error = 0;
+int16_t motorL_SetRPM = 0;
+int16_t motorR_SetRPM = 0;
 
 int16_t encoderL_counter = 0;
 uint8_t encoderL1_current_state = 0;
@@ -169,11 +180,24 @@ int main(void) {
 		/* Run PWM PID output update at 20Hz interval (50ms)
 			 PID_update_period >> loop period */
 		if (PID_flag == 1){
-		
-		
+			
+			PID_update( motorL_SetRPM, motorL_RPM);
+			PID_update( motorR_SetRPM, motorR_RPM);		
 		
 			PID_flag = 0;
 		}
+		
+		
+		
+		/* PWM range check */
+		
+		
+		
+		
+		
+		
+		/* Set PWM output */
+		
 
   }		
 }
@@ -379,6 +403,30 @@ void SPI_Pin_initialize(void){
 	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
 	GPIO_Init(SPI_GPIO_Port, &GPIO_InitStructure);
+}
+
+/* PID calculation function */
+int16_t PID_update(int16_t setpoint_RPM, int16_t current_RPM){
+	
+	int16_t error = abs(setpoint_RPM - current_RPM);
+	
+	// Proportional error value
+	proportional_val = error;
+	
+	// Integral error value, and anto-windup check
+	if (error <=100){
+		integral_val += error*PID_period;
+	}
+	
+	// Derivative error value
+	derivative_val = (error - error_past)/PID_period;
+	
+	total_error = (proportional_val*Kp) + (integral_val*Ki) + (derivative_val*Kd);
+
+	error_past = error;
+	
+	return total_error;
+
 }
 
 
