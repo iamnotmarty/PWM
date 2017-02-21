@@ -20,9 +20,13 @@
 
 /* Constant definition */
 static float const PID_period = 0.05;
-static uint8_t const Kp = 1;
-static uint8_t const Ki = 1;
-static uint8_t const Kd = 1;
+static float const Kp = 0.001;
+static float const Ki = 0.5;
+static float const Kd = 0;
+static uint8_t const PWM_MAX = 100;
+static uint8_t const PWM_MIN = 0;
+static uint8_t const INTEGRAL_WINDUP_SENSITIVITY = 200;
+static uint16_t const MOTOR_RPM_MAX = 8000;
 
 
 /* Motor control pins definition */
@@ -67,10 +71,9 @@ void Motor_ControlPin_initialize(void);
 void Encoder_Pin_initialize(void);
 void SPI_Pin_initialize(void);
 int16_t PID_update(int16_t, int16_t);
+uint8_t PWM_range_check(uint8_t);
 static void SetDutyCycle_LeftMotor(uint8_t);
 static void SetDutyCycle_RightMotor(uint8_t);
-
-
 
 //Type Define
 GPIO_InitTypeDef  GPIO_InitStructure;
@@ -86,23 +89,31 @@ int16_t error_past = 0;
 float proportional_val = 0;
 float integral_val = 0;
 float derivative_val = 0;
-int16_t total_error = 0;
-int16_t motorL_SetRPM = 0;
-int16_t motorR_SetRPM = 0;
+int16_t PWM_error_L = 0;
+int16_t PWM_error_R = 0;
+
 
 int16_t encoderL_counter = 0;
 uint8_t encoderL1_current_state = 0;
 uint8_t encoderL2_current_state = 0;
 uint8_t encoderL1_past_state = 0;
 uint8_t encoderL2_past_state = 0;
+int16_t motorL_SetRPM = 0;
 int16_t motorL_RPM = 0;
+uint8_t PWM_Pulse_L = 0;
+uint8_t ideal_PWM_L = 0;
+int8_t controller_pos_L = 0;
 
 int16_t encoderR_counter = 0;
 uint8_t encoderR1_current_state = 0;
 uint8_t encoderR2_current_state = 0;
 uint8_t encoderR1_past_state = 0;
 uint8_t encoderR2_past_state = 0;
+int16_t motorR_SetRPM = 0;
 int16_t motorR_RPM = 0;
+uint8_t PWM_Pulse_R = 0;
+uint8_t ideal_PWM_R = 0;
+int8_t controller_pos_R = 0;
 
 int main(void) {
 	
@@ -153,12 +164,55 @@ int main(void) {
 		encoderR2_past_state = encoderR2_current_state;
 		
 		
+		
+		
 		/* Get tranceiver data */
 		
 		
 		
 		
+		
+		
+		/* Calculate ideal PWM speed*/		
+		motorL_SetRPM = (controller_pos_L/100) * MOTOR_RPM_MAX;
+		motorR_SetRPM = (controller_pos_R/100) * MOTOR_RPM_MAX;
+		
+		ideal_PWM_L = abs(controller_pos_L);
+		ideal_PWM_R = abs(controller_pos_R);		
+		
+		
+		
+		
+		/* Set motors forward/reverse pins */
+		// Left motor control pin
+		if (controller_pos_L>0){
+			GPIO_SetBits(motorL1_port,motorL1_pin);
+			GPIO_ResetBits(motorL2_port,motorL2_pin);
 			
+		}else if (controller_pos_L<0){
+			GPIO_ResetBits(motorL1_port,motorL1_pin);
+			GPIO_SetBits(motorL2_port,motorL2_pin);
+				
+		}else if (controller_pos_L==0){
+			GPIO_SetBits(motorL1_port,motorL1_pin);
+			GPIO_ResetBits(motorL2_port,motorL2_pin);
+		}
+		
+		// Right motor control pin
+		if (controller_pos_R>0){			
+			GPIO_SetBits(motorR1_port,motorR1_pin);
+			GPIO_ResetBits(motorR2_port,motorR2_pin);
+			
+		}else if (controller_pos_R<0){
+			GPIO_ResetBits(motorR1_port,motorR1_pin);
+			GPIO_SetBits(motorR2_port,motorR2_pin);				
+		
+		}else if (controller_pos_R==0){
+			GPIO_SetBits(motorR1_port,motorR1_pin);
+			GPIO_ResetBits(motorR2_port,motorR2_pin);		
+		}
+			
+		
 		
 		
 		/* Run RPM update at 20Hz interval (50ms)
@@ -177,29 +231,32 @@ int main(void) {
 		
 				
 		
+		
 		/* Run PWM PID output update at 20Hz interval (50ms)
 			 PID_update_period >> loop period */
 		if (PID_flag == 1){
 			
-			PID_update( motorL_SetRPM, motorL_RPM);
-			PID_update( motorR_SetRPM, motorR_RPM);		
+			// Update PID calculation
+			PWM_error_L = PID_update(motorL_SetRPM, motorL_RPM);
+			PWM_error_R = PID_update(motorR_SetRPM, motorR_RPM);		
 		
+			// Calculate PWM output
+			PWM_Pulse_L = ideal_PWM_L + PWM_error_L ;
+			PWM_Pulse_R = ideal_PWM_R + PWM_error_R;
+			
+			// PWM range check		
+			PWM_Pulse_L = PWM_range_check(PWM_Pulse_L);
+			PWM_Pulse_R = PWM_range_check(PWM_Pulse_R);		
+		
+			// Set PWM output
+			SetDutyCycle_LeftMotor(PWM_Pulse_L);
+			SetDutyCycle_RightMotor(PWM_Pulse_R);
+						
 			PID_flag = 0;
 		}
 		
-		
-		
-		/* PWM range check */
-		
-		
-		
-		
-		
-		
-		/* Set PWM output */
-		
-
-  }		
+	}		
+	
 }
 
 /* Initialize MISC GPIO pins */
@@ -207,8 +264,7 @@ void GPIO_initialize(void){
 	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;
 	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
-	GPIO_Init(GPIOA, &GPIO_InitStructure);
-	
+	GPIO_Init(GPIOA, &GPIO_InitStructure);	
 }
 
 /* Initialize timer */
@@ -235,8 +291,7 @@ void TIM_initialize(void){
   timerInitStructure.TIM_Period = 100;
   timerInitStructure.TIM_ClockDivision = 0;
   timerInitStructure.TIM_RepetitionCounter = 0;
-  TIM_TimeBaseInit(TIM3, &timerInitStructure);
-	
+  TIM_TimeBaseInit(TIM3, &timerInitStructure);	
 }
 
 /* RCC clock initialize */
@@ -255,8 +310,7 @@ void RCC_initialize(void){
 	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
 
 	//TIMER 4
-	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM4, ENABLE);
-	
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM4, ENABLE);	
 }
 
 /* Initialize nested vector interrupt control on timer 2*/
@@ -266,8 +320,7 @@ void NVIC_Configuration(void){
   NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
   NVIC_InitStructure.NVIC_IRQChannelSubPriority = 1;      
   NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
-  NVIC_Init(&NVIC_InitStructure); 
-	
+  NVIC_Init(&NVIC_InitStructure); 	
 }
 
 /* Initialize timer 3 PWM function for motor control */
@@ -275,7 +328,7 @@ void Motor_PWM_initialize(void){
 		
     // Left Motor PWM Enable pins output channels initialize
 	  outputChannelInit.TIM_OCMode = TIM_OCMode_PWM1;
-    outputChannelInit.TIM_Pulse = CCR_reset;
+    outputChannelInit.TIM_Pulse = 0;
     outputChannelInit.TIM_OutputState = TIM_OutputState_Enable;
     outputChannelInit.TIM_OCPolarity = TIM_OCPolarity_High;
  
@@ -285,7 +338,7 @@ void Motor_PWM_initialize(void){
 	
 	  // Right Motor PWM Enable pins output channels initialize
 		outputChannelInit.TIM_OCMode = TIM_OCMode_PWM1;
-    outputChannelInit.TIM_Pulse = CCR_reset;
+    outputChannelInit.TIM_Pulse = 0;
     outputChannelInit.TIM_OutputState = TIM_OutputState_Enable;
     outputChannelInit.TIM_OCPolarity = TIM_OCPolarity_High;
  
@@ -339,7 +392,6 @@ void SetDutyCycle_LeftMotor(uint8_t percent){
 	
 	outputChannelInit.TIM_Pulse = percent;
 	TIM_OC1Init(TIM3, &outputChannelInit);
-  TIM_OC1PreloadConfig(TIM3, TIM_OCPreload_Enable);
 }
 
 /* Updates right motor PWM duty cycle */
@@ -347,7 +399,6 @@ void SetDutyCycle_RightMotor(uint8_t percent){
 	
 	outputChannelInit.TIM_Pulse = percent;
 	TIM_OC2Init(TIM3, &outputChannelInit);
-  TIM_OC2PreloadConfig(TIM3, TIM_OCPreload_Enable);
 }
 
 
@@ -373,7 +424,6 @@ void Encoder_Pin_initialize(void){
 	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;	
 	GPIO_Init(encoderR2_port, &GPIO_InitStructure);
-
 }
 
 /* Initialize SPI communication pins*/
@@ -407,14 +457,14 @@ void SPI_Pin_initialize(void){
 
 /* PID calculation function */
 int16_t PID_update(int16_t setpoint_RPM, int16_t current_RPM){
-	
+	int16_t total_error = 0;
 	int16_t error = abs(setpoint_RPM - current_RPM);
 	
 	// Proportional error value
 	proportional_val = error;
 	
 	// Integral error value, and anto-windup check
-	if (error <=100){
+	if (error <=INTEGRAL_WINDUP_SENSITIVITY){
 		integral_val += error*PID_period;
 	}
 	
@@ -426,7 +476,18 @@ int16_t PID_update(int16_t setpoint_RPM, int16_t current_RPM){
 	error_past = error;
 	
 	return total_error;
+}
 
+/* Max, min range check */
+uint8_t PWM_range_check(uint8_t pulse){
+	
+	if (pulse<PWM_MIN){
+		pulse = PWM_MIN;
+	}else if (pulse>PWM_MAX){
+		pulse = PWM_MAX;	
+	}
+	
+	return pulse;
 }
 
 
@@ -438,10 +499,7 @@ void TIM2_IRQHandler(void)
     TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
 		
 		RPM_flag = 1;
-		PID_flag = 1;		
-    
+		PID_flag = 1;		    
   }
 		
 } 
-
-
